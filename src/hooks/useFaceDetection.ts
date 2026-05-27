@@ -9,14 +9,15 @@
  *   setInterval (DETECTION_INTERVAL_MS)
  *     → cameraRef.takeSnapshot()          — grab current frame as Nitro Image
  *     → image.saveToTemporaryFileAsync()  — write to temp file
- *     → detectFacesFromUri(path)          — ML Kit inference
+ *     → detectFacesFromUri / detectFacesWithLiveness  — ML Kit inference
  *     → coordinate mapping               — image-space → screen-space
  *     → store.setDetectedFaces()         — triggers overlay re-render
+ *     → [liveness mode] store.pushLivenessFrame()  — feeds heuristics
  *
  * Performance characteristics:
  * - Preview runs at full 30fps uninterrupted
  * - Detection runs at ~7-8fps (125ms throttle)
- * - Each detection call is ~50-150ms on mid-range Android
+ * - Each detection call is ~50-170ms on mid-range Android
  * - Guard: if previous detection is still running, skip the frame
  * - FPS rolling average: updated every 10 frames
  */
@@ -24,6 +25,7 @@
 import { useEffect, useRef, useCallback } from 'react';
 import type { CameraRef } from 'react-native-vision-camera';
 import { detectFacesFromUri } from '../core/ml/faceDetection';
+import { detectFacesWithLiveness } from '../core/ml/livenessDetection';
 import { useAppStore } from '../core/store/useAppStore';
 import type { ImageSize } from '../types';
 
@@ -47,6 +49,12 @@ export interface UseFaceDetectionProps {
   viewSize: ImageSize;
   /** Whether detection should be running (e.g. false when screen unfocused) */
   isActive: boolean;
+  /**
+   * When true, uses the liveness detection config (classificationMode:all)
+   * and pushes LivenessFrames into the Zustand buffer.
+   * Use this in VERIFY mode.
+   */
+  livenessMode?: boolean;
   /** Show debug info in console */
   debug?: boolean;
 }
@@ -62,12 +70,14 @@ export function useFaceDetection({
   cameraRef,
   viewSize,
   isActive,
+  livenessMode = false,
   debug = false,
 }: UseFaceDetectionProps): UseFaceDetectionResult {
   const setDetectedFaces = useAppStore((s) => s.setDetectedFaces);
   const setDetectionStatus = useAppStore((s) => s.setDetectionStatus);
   const updateDetectionTiming = useAppStore((s) => s.updateDetectionTiming);
   const resetDetectionState = useAppStore((s) => s.resetDetectionState);
+  const pushLivenessFrame = useAppStore((s) => s.pushLivenessFrame);
 
   // Guards & timing refs — using refs to avoid stale closure issues
   const isDetectingRef = useRef(false);
@@ -76,6 +86,7 @@ export function useFaceDetection({
   const fpsFrameTimesRef = useRef<number[]>([]);
   const isActiveRef = useRef(isActive);
   const viewSizeRef = useRef(viewSize);
+  const livenessModeRef = useRef(livenessMode);
 
   // Keep refs in sync with latest props without causing re-renders
   useEffect(() => {
@@ -85,6 +96,10 @@ export function useFaceDetection({
   useEffect(() => {
     viewSizeRef.current = viewSize;
   }, [viewSize]);
+
+  useEffect(() => {
+    livenessModeRef.current = livenessMode;
+  }, [livenessMode]);
 
   // ── Core detection tick ────────────────────────────────────────────────────
 
@@ -119,13 +134,32 @@ export function useFaceDetection({
         height: image.height,
       };
 
-      // 4. Run ML Kit face detection
-      const faces = await detectFacesFromUri(imageUri, imageSize, viewSizeRef.current);
+      // 4. Run ML Kit — liveness mode or fast mode
+      if (livenessModeRef.current) {
+        const result = await detectFacesWithLiveness(imageUri, imageSize, viewSizeRef.current);
+        setDetectedFaces(result.faces);
+        if (result.livenessFrame) {
+          pushLivenessFrame(result.livenessFrame);
+        }
+        if (debug && result.faces.length > 0) {
+          const f = result.livenessFrame;
+          console.log(
+            `[Liveness] L-eye:${f?.leftEyeOpenProb.toFixed(2)} ` +
+            `R-eye:${f?.rightEyeOpenProb.toFixed(2)} ` +
+            `Yaw:${f?.rotationY.toFixed(1)}° Smile:${f?.smilingProb.toFixed(2)}`,
+          );
+        }
+      } else {
+        const faces = await detectFacesFromUri(imageUri, imageSize, viewSizeRef.current);
+        setDetectedFaces(faces);
+        if (debug) {
+          console.log(
+            `[FaceDetection] ${faces.length} face(s) — image: ${imageSize.width}x${imageSize.height}`,
+          );
+        }
+      }
 
-      // 5. Update store (triggers overlay re-render)
-      setDetectedFaces(faces);
-
-      // 6. Update FPS rolling average
+      // 5. Update FPS rolling average
       const now = Date.now();
       fpsFrameTimesRef.current.push(now);
       if (fpsFrameTimesRef.current.length > FPS_AVERAGING_FRAMES) {
@@ -136,15 +170,8 @@ export function useFaceDetection({
       if (fpsFrameTimesRef.current.length >= 2) {
         const oldest = fpsFrameTimesRef.current[0];
         const newest = fpsFrameTimesRef.current[fpsFrameTimesRef.current.length - 1];
-        const fps = ((fpsFrameTimesRef.current.length - 1) / ((newest - oldest) / 1000));
+        const fps = (fpsFrameTimesRef.current.length - 1) / ((newest - oldest) / 1000);
         updateDetectionTiming(Math.round(fps * 10) / 10);
-      }
-
-      if (debug) {
-        console.log(
-          `[FaceDetection] ${faces.length} face(s) detected — ` +
-            `image: ${imageSize.width}x${imageSize.height}`,
-        );
       }
     } catch (error) {
       if (debug) {
@@ -154,13 +181,12 @@ export function useFaceDetection({
     } finally {
       isDetectingRef.current = false;
     }
-  }, [cameraRef, setDetectedFaces, setDetectionStatus, updateDetectionTiming, debug]);
+  }, [cameraRef, setDetectedFaces, setDetectionStatus, updateDetectionTiming, pushLivenessFrame, debug]);
 
   // ── Lifecycle: start / stop interval ──────────────────────────────────────
 
   useEffect(() => {
     if (!isActive) {
-      // Stop detection and clean up state when screen loses focus
       if (intervalRef.current) {
         clearInterval(intervalRef.current);
         intervalRef.current = null;
@@ -169,7 +195,6 @@ export function useFaceDetection({
       return;
     }
 
-    // Start detection loop
     intervalRef.current = setInterval(runDetectionTick, DETECTION_INTERVAL_MS);
 
     return () => {
@@ -182,7 +207,6 @@ export function useFaceDetection({
 
   // ── Return debug info ──────────────────────────────────────────────────────
 
-  // Return a primitive scalar to keep useSyncExternalStore snapshot stable
   const detectionFps = useAppStore((state) => state.detectionFps);
 
   return {

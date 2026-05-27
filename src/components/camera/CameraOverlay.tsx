@@ -2,6 +2,7 @@ import React, { useEffect, useRef } from 'react';
 import { View, StyleSheet, Animated, Text } from 'react-native';
 import { Typography } from '../ui/Typography';
 import { FaceBoundingBox } from './FaceBoundingBox';
+import { LivenessOverlay } from './LivenessOverlay';
 import { useAppStore } from '../../core/store/useAppStore';
 import type { FaceDetectionStatus } from '../../types';
 
@@ -11,6 +12,8 @@ type Props = {
   mode: 'ENROLL' | 'VERIFY';
   /** Whether to show debug panel (FPS, detection coords) */
   showDebug?: boolean;
+  /** Called when user presses Retry in liveness overlay */
+  onLivenessRetry?: () => void;
 };
 
 // ─── Status Label Map ─────────────────────────────────────────────────────────
@@ -33,7 +36,7 @@ const STATUS_COLOR: Record<FaceDetectionStatus, string> = {
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
-export const CameraOverlay: React.FC<Props> = React.memo(({ mode, showDebug = false }) => {
+export const CameraOverlay: React.FC<Props> = React.memo(({ mode, showDebug = false, onLivenessRetry }) => {
   // Use separate primitive/stable selectors — returning a new object every call
   // will cause useSyncExternalStore infinite loop in React 19 + Zustand v5
   const detectedFaces = useAppStore((s) => s.detectedFaces);
@@ -112,16 +115,17 @@ export const CameraOverlay: React.FC<Props> = React.memo(({ mode, showDebug = fa
         </View>
       )}
 
-      {/* ── Footer instruction ── */}
-      <View style={styles.footer}>
-        <Typography variant="body" style={styles.footerText}>
-          {hasFace
-            ? mode === 'ENROLL'
-              ? 'Hold still for enrollment'
-              : 'Verifying...'
-            : 'Position your face in frame'}
-        </Typography>
-      </View>
+      {/* ── Liveness overlay — VERIFY mode only ── */}
+      {mode === 'VERIFY' && <LivenessOverlay onRetry={onLivenessRetry} />}
+
+      {/* ── Footer instruction — only shown in ENROLL mode ── */}
+      {mode === 'ENROLL' && (
+        <View style={styles.footer}>
+          <Typography variant="body" style={styles.footerText}>
+            {hasFace ? 'Hold still for enrollment' : 'Position your face in frame'}
+          </Typography>
+        </View>
+      )}
     </View>
   );
 });

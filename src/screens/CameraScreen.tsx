@@ -16,6 +16,7 @@ import { Button } from '../components/ui/Button';
 import { Typography } from '../components/ui/Typography';
 import { useCameraSetup } from '../hooks/useCameraSetup';
 import { useFaceDetection } from '../hooks/useFaceDetection';
+import { useLiveness } from '../hooks/useLiveness';
 import { CameraOverlay } from '../components/camera/CameraOverlay';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -61,13 +62,31 @@ export const CameraScreen: React.FC<Props> = ({ navigation, route }) => {
   // ── Face detection pipeline ─────────────────────────────────────────────────
   // Only active when screen is focused, permission granted, and device ready
   const isDetectionActive = isFocused && hasPermission && device != null && !isInitializing;
+  // Use liveness mode (classificationMode:all) in VERIFY mode
+  const isVerifyMode = mode === 'VERIFY';
 
   const { detectionFps } = useFaceDetection({
     cameraRef,
     viewSize,
     isActive: isDetectionActive,
+    livenessMode: isVerifyMode,
     debug: __DEV__,
   });
+
+  // ── Liveness verification (VERIFY mode only) ────────────────────────────────
+  const { resetLiveness } = useLiveness({
+    isActive: isDetectionActive && isVerifyMode,
+    onVerified: () => {
+      if (__DEV__) console.log('[CameraScreen] Liveness VERIFIED');
+    },
+    onFailed: () => {
+      if (__DEV__) console.log('[CameraScreen] Liveness FAILED');
+    },
+  });
+
+  const handleLivenessRetry = useCallback(() => {
+    resetLiveness();
+  }, [resetLiveness]);
 
   // ─────────────────────────────────────────────────────────────────────────────
   // Render: Loading
@@ -137,8 +156,8 @@ export const CameraScreen: React.FC<Props> = ({ navigation, route }) => {
         pixelFormat="yuv"
       />
 
-      {/* Face detection overlay — bounding boxes, status, debug panel */}
-      <CameraOverlay mode={mode} showDebug={showDebug} />
+      {/* Face detection overlay — bounding boxes, status, debug panel, liveness */}
+      <CameraOverlay mode={mode} showDebug={showDebug} onLivenessRetry={handleLivenessRetry} />
 
       {/* Bottom controls */}
       <View style={styles.bottomControls}>

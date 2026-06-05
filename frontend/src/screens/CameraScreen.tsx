@@ -18,28 +18,24 @@ import { useCameraSetup } from '../hooks/useCameraSetup';
 import { useFaceDetection } from '../hooks/useFaceDetection';
 import { useLiveness } from '../hooks/useLiveness';
 import { CameraOverlay } from '../components/camera/CameraOverlay';
+import { SuccessOverlay } from '../components/camera/SuccessOverlay';
 import { useAppStore } from '../core/store/useAppStore';
 import { enrollFace, verifyFace } from '../core/backend/faceAuthBackend';
 import { createEmbeddingFromDetectionSignal } from '../core/ml/embeddingAdapter';
-
-// ─── Types ────────────────────────────────────────────────────────────────────
+import { COLORS } from '../config/theme';
 
 type Props = {
   navigation: NativeStackNavigationProp<RootStackParamList, 'Camera'>;
   route: RouteProp<RootStackParamList, 'Camera'>;
 };
 
-// ─── Component ────────────────────────────────────────────────────────────────
-
 export const CameraScreen: React.FC<Props> = ({ navigation, route }) => {
   const { mode, enrollmentName } = route.params;
   const isFocused = useIsFocused();
   const { hasPermission, requestPermission, device } = useCameraSetup();
 
-  // ── Refs ────────────────────────────────────────────────────────────────────
   const cameraRef = useRef<CameraRef>(null);
 
-  // ── View layout (for coordinate mapping) ───────────────────────────────────
   const [viewSize, setViewSize] = useState({ width: 0, height: 0 });
   const onLayout = useCallback(
     (e: { nativeEvent: { layout: { width: number; height: number } } }) => {
@@ -49,16 +45,18 @@ export const CameraScreen: React.FC<Props> = ({ navigation, route }) => {
     [],
   );
 
-  // ── Debug toggle ────────────────────────────────────────────────────────────
   const [showDebug, setShowDebug] = useState(false);
   const [isProcessingResult, setIsProcessingResult] = useState(false);
   const [resultMessage, setResultMessage] = useState('');
   const [resultStatus, setResultStatus] = useState<'idle' | 'success' | 'error'>('idle');
+  
+  // State for Success Overlay details
+  const [successData, setSuccessData] = useState<{name: string, confidence: number} | null>(null);
+  
   const verificationHandledRef = useRef(false);
 
   const detectedFaces = useAppStore((state) => state.detectedFaces);
 
-  // ── Permission loading state ─────────────────────────────────────────────
   const [isInitializing, setIsInitializing] = useState(!hasPermission);
   React.useEffect(() => {
     if (!hasPermission) {
@@ -68,10 +66,7 @@ export const CameraScreen: React.FC<Props> = ({ navigation, route }) => {
     }
   }, [hasPermission, requestPermission]);
 
-  // ── Face detection pipeline ─────────────────────────────────────────────────
-  // Only active when screen is focused, permission granted, and device ready
-  const isDetectionActive = isFocused && hasPermission && device != null && !isInitializing;
-  // Use liveness mode (classificationMode:all) in VERIFY mode
+  const isDetectionActive = isFocused && hasPermission && device != null && !isInitializing && resultStatus !== 'success';
   const isVerifyMode = mode === 'VERIFY';
 
   const { detectionFps } = useFaceDetection({
@@ -82,7 +77,6 @@ export const CameraScreen: React.FC<Props> = ({ navigation, route }) => {
     debug: __DEV__,
   });
 
-  // ── Liveness verification (VERIFY mode only) ────────────────────────────────
   const { resetLiveness } = useLiveness({
     isActive: isDetectionActive && isVerifyMode,
     onVerified: async () => {
@@ -110,10 +104,17 @@ export const CameraScreen: React.FC<Props> = ({ navigation, route }) => {
           deviceId: 'mobile-local',
         });
         useAppStore.getState().recordAttendance(result.record);
-        setResultStatus(result.status === 'SUCCESS' ? 'success' : 'error');
-        setResultMessage(
-          `${result.message} (${(result.confidence * 100).toFixed(1)}% confidence)`,
-        );
+        
+        if (result.status === 'SUCCESS') {
+          setResultStatus('success');
+          setSuccessData({
+            name: result.user?.name || 'Unknown',
+            confidence: result.confidence
+          });
+        } else {
+          setResultStatus('error');
+          setResultMessage(result.message);
+        }
       } finally {
         setIsProcessingResult(false);
       }
@@ -162,49 +163,53 @@ export const CameraScreen: React.FC<Props> = ({ navigation, route }) => {
         embedding,
       });
       useAppStore.getState().enrollUser(result.user);
+      
       setResultStatus('success');
-      setResultMessage(`${result.user.name} enrolled and saved`);
+      setSuccessData({
+        name: result.user.name,
+        confidence: 1.0 // Enrollment is 100% confidence by definition
+      });
     } catch (error) {
       setResultStatus('error');
       setResultMessage('Enrollment could not be saved');
-      if (__DEV__) console.warn('[CameraScreen] Enrollment error:', error);
     } finally {
       setIsProcessingResult(false);
     }
   }, [enrollmentName]);
 
-  // ─────────────────────────────────────────────────────────────────────────────
-  // Render: Loading
-  // ─────────────────────────────────────────────────────────────────────────────
+  const resetSequence = () => {
+    setResultStatus('idle');
+    setSuccessData(null);
+    setResultMessage('');
+    verificationHandledRef.current = false;
+    if (isVerifyMode) resetLiveness();
+  };
+
 
   if (isInitializing) {
     return (
       <View style={[styles.container, styles.centered]}>
-        <ActivityIndicator size="large" color="#fff" />
+        <ActivityIndicator size="large" color={COLORS.primary} />
         <Typography style={{ color: '#fff', marginTop: 16 }}>
-          Initializing Camera...
+          Initializing Hardware...
         </Typography>
       </View>
     );
   }
 
-  // ─────────────────────────────────────────────────────────────────────────────
-  // Render: No Permission
-  // ─────────────────────────────────────────────────────────────────────────────
-
   if (!hasPermission) {
     return (
       <View style={[styles.container, styles.centered]}>
         <Typography variant="h3" style={{ color: '#fff', marginBottom: 16 }}>
-          Camera Permission Required
+          Hardware Access Required
         </Typography>
         <Typography style={{ color: '#999', marginBottom: 32, textAlign: 'center' }}>
           This app requires camera access to perform facial recognition and liveness detection.
         </Typography>
-        <Button title="Grant Permission" onPress={requestPermission} />
+        <Button title="Grant Access" onPress={requestPermission} />
         <Button
-          title="Go Back"
-          variant="secondary"
+          title="Abort Operation"
+          variant="outline"
           onPress={() => navigation.goBack()}
           style={{ marginTop: 16 }}
         />
@@ -212,24 +217,16 @@ export const CameraScreen: React.FC<Props> = ({ navigation, route }) => {
     );
   }
 
-  // ─────────────────────────────────────────────────────────────────────────────
-  // Render: No Device
-  // ─────────────────────────────────────────────────────────────────────────────
-
   if (device == null) {
     return (
       <View style={[styles.container, styles.centered]}>
         <Typography variant="h3" style={{ color: '#fff', marginBottom: 16 }}>
-          No Camera Device Found
+          Hardware Fault
         </Typography>
-        <Button title="Go Back" onPress={() => navigation.goBack()} />
+        <Button title="Abort Operation" onPress={() => navigation.goBack()} variant="outline" />
       </View>
     );
   }
-
-  // ─────────────────────────────────────────────────────────────────────────────
-  // Render: Camera + Detection Overlay
-  // ─────────────────────────────────────────────────────────────────────────────
 
   return (
     <View style={styles.container} onLayout={onLayout}>
@@ -237,66 +234,70 @@ export const CameraScreen: React.FC<Props> = ({ navigation, route }) => {
         ref={cameraRef}
         style={StyleSheet.absoluteFill}
         device={device}
-        isActive={isFocused}
+        isActive={isFocused && resultStatus !== 'success'} // Pause camera on success
         pixelFormat="yuv"
       />
 
-      {/* Face detection overlay — bounding boxes, status, debug panel, liveness */}
       <CameraOverlay mode={mode} showDebug={showDebug} onLivenessRetry={handleLivenessRetry} />
 
-      {/* Bottom controls */}
-      <View style={styles.bottomControls}>
-        {resultMessage.length > 0 && (
-          <View
-            style={[
-              styles.resultPanel,
-              resultStatus === 'success' ? styles.resultSuccess : styles.resultError,
-            ]}
-          >
-            <Text style={styles.resultText}>{resultMessage}</Text>
-          </View>
-        )}
-
-        {mode === 'ENROLL' && (
-          <Button
-            title={isProcessingResult ? 'Saving...' : 'Capture & Save'}
-            onPress={handleEnrollmentCapture}
-            disabled={isProcessingResult || detectedFaces.length === 0 || !enrollmentName}
-            style={styles.button}
-          />
-        )}
-
-        {mode === 'VERIFY' && resultStatus !== 'idle' && (
-          <Button
-            title="View History"
-            onPress={() => navigation.navigate('AttendanceHistory')}
-            disabled={isProcessingResult}
-            style={styles.button}
-          />
-        )}
-
-        {/* Debug toggle */}
-        <Pressable
-          onPress={() => setShowDebug((v) => !v)}
-          style={styles.debugToggle}
-        >
-          <Text style={styles.debugToggleText}>
-            {showDebug ? `⚡ ${detectionFps.toFixed(1)} fps` : '⚡ Debug'}
-          </Text>
-        </Pressable>
-
-        <Button
-          title="Go Back"
-          variant="secondary"
-          onPress={() => navigation.goBack()}
-          style={styles.button}
+      {resultStatus === 'success' && successData && (
+        <SuccessOverlay
+          mode={mode}
+          name={successData.name}
+          confidence={successData.confidence}
+          onContinue={mode === 'ENROLL' ? () => navigation.goBack() : resetSequence}
+          onViewHistory={() => navigation.replace('AttendanceHistory')}
         />
-      </View>
+      )}
+
+      {/* Bottom controls when NOT in success state */}
+      {resultStatus !== 'success' && (
+        <View style={styles.bottomControls}>
+          {resultMessage.length > 0 && (
+            <View style={[styles.resultPanel, styles.resultError]}>
+              <Text style={styles.resultText}>{resultMessage}</Text>
+            </View>
+          )}
+
+          {mode === 'ENROLL' && (
+            <Button
+              title={isProcessingResult ? 'Processing...' : 'Capture Reference Face'}
+              onPress={handleEnrollmentCapture}
+              disabled={isProcessingResult || detectedFaces.length === 0 || !enrollmentName}
+              style={styles.button}
+            />
+          )}
+
+          {mode === 'VERIFY' && resultStatus === 'error' && (
+            <Button
+              title="Acknowledge Fault"
+              onPress={handleLivenessRetry}
+              disabled={isProcessingResult}
+              style={styles.button}
+              variant="danger"
+            />
+          )}
+
+          <Pressable
+            onPress={() => setShowDebug((v) => !v)}
+            style={styles.debugToggle}
+          >
+            <Text style={styles.debugToggleText}>
+              {showDebug ? `SYS: ${detectionFps.toFixed(1)}Hz` : 'SYS: DBG'}
+            </Text>
+          </Pressable>
+
+          <Button
+            title="Abort Sequence"
+            variant="outline"
+            onPress={() => navigation.goBack()}
+            style={styles.button}
+          />
+        </View>
+      )}
     </View>
   );
 };
-
-// ─── Styles ───────────────────────────────────────────────────────────────────
 
 const styles = StyleSheet.create({
   container: {
@@ -314,44 +315,45 @@ const styles = StyleSheet.create({
     left: 24,
     right: 24,
     zIndex: 20,
-    gap: 10,
+    gap: 12,
     alignItems: 'center',
   },
   button: {
     width: '100%',
+    backgroundColor: 'rgba(0,0,0,0.8)',
+    borderColor: COLORS.primaryText,
+    borderWidth: 1,
   },
   resultPanel: {
     width: '100%',
     paddingHorizontal: 16,
     paddingVertical: 12,
-    borderRadius: 12,
+    borderRadius: 4,
     borderWidth: 1,
   },
-  resultSuccess: {
-    backgroundColor: 'rgba(0, 70, 35, 0.82)',
-    borderColor: 'rgba(0, 255, 136, 0.55)',
-  },
   resultError: {
-    backgroundColor: 'rgba(80, 10, 10, 0.82)',
-    borderColor: 'rgba(255, 82, 82, 0.55)',
+    backgroundColor: 'rgba(219, 68, 55, 0.9)',
+    borderColor: COLORS.danger,
   },
   resultText: {
     color: '#fff',
     fontSize: 14,
-    fontWeight: '600',
+    fontWeight: '700',
     textAlign: 'center',
+    textTransform: 'uppercase',
   },
   debugToggle: {
     paddingHorizontal: 16,
     paddingVertical: 8,
-    backgroundColor: 'rgba(0,0,0,0.5)',
-    borderRadius: 20,
+    backgroundColor: 'rgba(0,0,0,0.8)',
+    borderRadius: 4,
     borderWidth: 1,
-    borderColor: 'rgba(0,255,136,0.4)',
+    borderColor: COLORS.border,
   },
   debugToggleText: {
-    color: '#00FF88',
+    color: COLORS.secondaryText,
     fontSize: 12,
     fontFamily: 'monospace',
+    fontWeight: '700',
   },
 });

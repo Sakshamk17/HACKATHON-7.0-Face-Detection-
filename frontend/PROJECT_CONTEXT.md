@@ -257,3 +257,29 @@ CameraOverlay re-renders → FaceBoundingBox (animated)
 - Phase 6: Liveness detection (blink detection, head pose estimation)
 - Cleanup: Temp file deletion for ML Kit snapshots
 - Cleanup: Migrate frame processing to worklets when TFLite is added
+
+## Phase 4 Update: End-to-End System Integration Note
+- **Current Embeddings**: Face embeddings are currently **mocked** inside `src/core/ml/embeddingAdapter.ts` using liveness heuristics and bounding box coordinates to generate a 128-d vector.
+- **Offline ML System**: The `offline-face-auth` folder contains a standalone PyTorch implementation (MobileFaceNet) which is currently **disconnected**. Neither the frontend nor the backend invokes it. 
+- **Physical Device Networking**: To run on a physical Android device, the frontend `BACKEND_URL` in `src/config/env.ts` has been updated to `http://localhost:8080`. The connection to the host machine's backend is bridged securely using `adb reverse tcp:8080 tcp:8080`.
+
+## Repository Analysis Completed
+- **Status**: Full repository reverse-engineering completed successfully.
+- **Documentation Location**: `CODEBASE_KNOWLEDGE_BASE.md`
+- **Major Findings**: The frontend and backend are tightly integrated using HTTP APIs, but the actual Face Embedding ML System (`offline-face-auth`) is completely disconnected. The frontend currently relies on a math-based *mock* embedding generator.
+- **Integration Readiness Assessment**: The repository is structurally sound but lacks a TFLite execution environment on the frontend. The `mobilefacenet.pt` PyTorch model must be converted to `.tflite` to bridge the final integration gap.
+
+## UI/UX Redesign: NHAI Field Operations System
+- **Theme Architecture**: Transformed into a "Government-grade" aesthetic (Datalake 3.0), prioritizing high contrast, professional typography, and strict color palettes (NHAI Primary `#005BAC`, Success `#0F9D58`, etc.).
+- **Reusable Components Created**: 
+  - `Badges.tsx` (StatusBadge, OfflineStatusBadge)
+  - `MetricCard.tsx` (For operational dashboards)
+  - `ConfidenceBar.tsx` (Visual progress bar for match confidence)
+  - `SuccessOverlay.tsx` (Full-screen completion report for verification steps)
+- **UX Improvements**:
+  - Replaced native iOS/Android alerts with integrated UI overlays.
+  - Guided steps added to the Enrollment flow.
+  - "Authentication Pipeline" visual checklists added to Verification screens.
+  - Camera overlays changed from playful rounded corners to strict "industrial" crosshairs and tracking brackets.
+  - Home screen replaced with a System Status Dashboard.
+- **Design Decisions**: Eliminated border-radii on buttons and switched to uppercase typography to mimic field terminals/hardware. Preserved absolutely all underlying React state, Vision Camera hooks, ML Kit inference, and backend SQLite logic.

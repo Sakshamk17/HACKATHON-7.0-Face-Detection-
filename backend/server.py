@@ -1,16 +1,22 @@
+import base64
 import json
 import math
+import os
 import sqlite3
+import sys
 import uuid
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 
 ROOT = Path(__file__).resolve().parent
+PROJECT_ROOT = ROOT.parent
+ML_DIR = PROJECT_ROOT / "offline-face-auth"
 DB_PATH = ROOT / "db" / "faceid.db"
 MATCH_THRESHOLD = 0.6
+_ml_tools: tuple[Callable[[Any], Any], Callable[[Any], Any]] | None = None
 
 
 def now_iso() -> str:
@@ -85,6 +91,67 @@ def load_json(body: bytes) -> dict[str, Any]:
     if not body:
         return {}
     return json.loads(body.decode("utf-8"))
+
+
+def load_ml_tools() -> tuple[Callable[[Any], Any], Callable[[Any], Any]]:
+    global _ml_tools
+    if _ml_tools is not None:
+        return _ml_tools
+
+    if str(ML_DIR) not in sys.path:
+        sys.path.insert(0, str(ML_DIR))
+
+    cwd = os.getcwd()
+    os.chdir(ML_DIR)
+    try:
+        from detector import extract_face
+        from recognize import get_embedding
+    finally:
+        os.chdir(cwd)
+
+    _ml_tools = (extract_face, get_embedding)
+    return _ml_tools
+
+
+def decode_image_payload(payload: dict[str, Any]) -> bytes:
+    image_base64 = payload.get("imageBase64")
+    if not isinstance(image_base64, str) or not image_base64:
+        raise ValueError("imageBase64 is required for ML inference")
+
+    if "," in image_base64:
+        image_base64 = image_base64.split(",", 1)[1]
+
+    return base64.b64decode(image_base64)
+
+
+def get_embedding_from_image_payload(payload: dict[str, Any]) -> list[float]:
+    import cv2
+    import numpy as np
+
+    extract_face, get_embedding = load_ml_tools()
+    image_bytes = decode_image_payload(payload)
+    encoded = np.frombuffer(image_bytes, dtype=np.uint8)
+    frame = cv2.imdecode(encoded, cv2.IMREAD_COLOR)
+    if frame is None:
+        raise ValueError("Could not decode uploaded image")
+
+    face = extract_face(frame)
+    if face is None:
+        raise ValueError("No face detected by ML model")
+
+    embedding = get_embedding(face)
+    return [float(value) for value in embedding.tolist()]
+
+
+def get_embedding_from_request(payload: dict[str, Any]) -> tuple[list[float], bool]:
+    if payload.get("imageBase64"):
+        return get_embedding_from_image_payload(payload), True
+
+    embedding = payload.get("embedding")
+    if isinstance(embedding, list):
+        return [float(value) for value in embedding], False
+
+    raise ValueError("imageBase64 or embedding is required")
 
 
 def best_match(embedding: list[float]) -> tuple[sqlite3.Row | None, float]:
@@ -195,11 +262,11 @@ class FaceAuthHandler(BaseHTTPRequestHandler):
 
     def handle_enroll(self, payload: dict[str, Any]) -> None:
         name = str(payload.get("name", "")).strip()
-        embedding = payload.get("embedding")
-        if not name or not isinstance(embedding, list):
-            self._send_json(400, {"error": "name and embedding are required"})
+        if not name:
+            self._send_json(400, {"error": "name is required"})
             return
 
+        embedding, model_used = get_embedding_from_request(payload)
         timestamp = now_iso()
         user_id = str(uuid.uuid4())
         with connect() as connection:
@@ -221,21 +288,19 @@ class FaceAuthHandler(BaseHTTPRequestHandler):
                     "enrolledAt": timestamp,
                 },
                 "saved": True,
+                "modelUsed": model_used,
             },
         )
 
     def handle_verify(self, payload: dict[str, Any]) -> None:
-        embedding = payload.get("embedding")
         liveness_passed = bool(payload.get("livenessPassed"))
         device_id = str(payload.get("deviceId", "mobile-local"))
 
-        if not isinstance(embedding, list):
-            self._send_json(400, {"error": "embedding is required"})
-            return
-
         user = None
         confidence = 0.0
+        model_used = False
         if liveness_passed:
+            embedding, model_used = get_embedding_from_request(payload)
             user, confidence = best_match(embedding)
 
         is_recognized = user is not None and confidence >= MATCH_THRESHOLD
@@ -258,6 +323,7 @@ class FaceAuthHandler(BaseHTTPRequestHandler):
                 "status": status,
                 "confidence": confidence,
                 "livenessPassed": liveness_passed,
+                "modelUsed": model_used,
                 "user": {
                     "id": user_id,
                     "name": user_name,

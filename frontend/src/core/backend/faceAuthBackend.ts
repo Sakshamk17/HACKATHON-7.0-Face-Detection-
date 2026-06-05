@@ -17,9 +17,15 @@ export type EnrollmentRequest = {
   embedding: number[];
 };
 
+export type EnrollmentImageRequest = {
+  name: string;
+  imageUri: string;
+};
+
 export type EnrollmentResponse = {
   user: User;
   saved: true;
+  modelUsed?: boolean;
 };
 
 export type VerificationRequest = {
@@ -28,10 +34,17 @@ export type VerificationRequest = {
   deviceId: string;
 };
 
+export type VerificationImageRequest = {
+  imageUri: string;
+  livenessPassed: boolean;
+  deviceId: string;
+};
+
 export type VerificationResponse = {
   status: AttendanceRecord['status'];
   confidence: number;
   livenessPassed: boolean;
+  modelUsed?: boolean;
   user: User | null;
   record: AttendanceRecord;
   message: string;
@@ -58,6 +71,26 @@ const postJson = async <ResponseBody,>(
     }
     return null;
   }
+};
+
+const imageUriToBase64 = async (imageUri: string): Promise<string> => {
+  const response = await fetch(imageUri);
+  const blob = await response.blob();
+
+  return await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('Could not read camera image'));
+    reader.onloadend = () => {
+      const result = reader.result;
+      if (typeof result !== 'string') {
+        reject(new Error('Camera image conversion failed'));
+        return;
+      }
+
+      resolve(result);
+    };
+    reader.readAsDataURL(blob);
+  });
 };
 
 const cosineSimilarity = (a: number[], b: number[]): number => {
@@ -117,6 +150,23 @@ export const enrollFace = async ({
   return { user, saved: true };
 };
 
+export const enrollFaceFromImage = async ({
+  name,
+  imageUri,
+}: EnrollmentImageRequest): Promise<EnrollmentResponse> => {
+  if (!ENV.BACKEND_URL) {
+    throw new Error('ML backend URL is not configured');
+  }
+
+  const imageBase64 = await imageUriToBase64(imageUri);
+  const apiResponse = await postJson<EnrollmentResponse>('/enroll', { name, imageBase64 });
+  if (!apiResponse) {
+    throw new Error('ML backend enrollment failed');
+  }
+
+  return apiResponse;
+};
+
 export const verifyFace = async ({
   embedding,
   livenessPassed,
@@ -173,6 +223,28 @@ export const verifyFace = async ({
         ? 'No matching enrolled face found'
         : 'Liveness verification failed',
   };
+};
+
+export const verifyFaceFromImage = async ({
+  imageUri,
+  livenessPassed,
+  deviceId,
+}: VerificationImageRequest): Promise<VerificationResponse> => {
+  if (!ENV.BACKEND_URL) {
+    throw new Error('ML backend URL is not configured');
+  }
+
+  const imageBase64 = await imageUriToBase64(imageUri);
+  const apiResponse = await postJson<VerificationResponse>('/verify', {
+    imageBase64,
+    livenessPassed,
+    deviceId,
+  });
+  if (!apiResponse) {
+    throw new Error('ML backend verification failed');
+  }
+
+  return apiResponse;
 };
 
 export const getFaceAuthSnapshot = (): {

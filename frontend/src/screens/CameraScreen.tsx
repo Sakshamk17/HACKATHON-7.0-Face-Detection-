@@ -19,8 +19,11 @@ import { useFaceDetection } from '../hooks/useFaceDetection';
 import { useLiveness } from '../hooks/useLiveness';
 import { CameraOverlay } from '../components/camera/CameraOverlay';
 import { useAppStore } from '../core/store/useAppStore';
-import { enrollFace, verifyFace } from '../core/backend/faceAuthBackend';
-import { createEmbeddingFromDetectionSignal } from '../core/ml/embeddingAdapter';
+import {
+  enrollFaceFromImage,
+  verifyFace,
+  verifyFaceFromImage,
+} from '../core/backend/faceAuthBackend';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -28,6 +31,8 @@ type Props = {
   navigation: NativeStackNavigationProp<RootStackParamList, 'Camera'>;
   route: RouteProp<RootStackParamList, 'Camera'>;
 };
+
+const MODEL_SNAPSHOT_QUALITY = 85;
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
@@ -57,6 +62,16 @@ export const CameraScreen: React.FC<Props> = ({ navigation, route }) => {
   const verificationHandledRef = useRef(false);
 
   const detectedFaces = useAppStore((state) => state.detectedFaces);
+
+  const captureModelInput = useCallback(async (): Promise<string> => {
+    const image = await cameraRef.current?.takeSnapshot?.();
+    if (!image) {
+      throw new Error('Camera snapshot failed');
+    }
+
+    const tempPath = await image.saveToTemporaryFileAsync('jpg', MODEL_SNAPSHOT_QUALITY);
+    return `file://${tempPath}`;
+  }, []);
 
   // ── Permission loading state ─────────────────────────────────────────────
   const [isInitializing, setIsInitializing] = useState(!hasPermission);
@@ -92,8 +107,6 @@ export const CameraScreen: React.FC<Props> = ({ navigation, route }) => {
 
       const state = useAppStore.getState();
       const face = state.detectedFaces[0];
-      const latestLivenessFrame =
-        state.livenessFrameBuffer[state.livenessFrameBuffer.length - 1];
 
       if (!face) {
         setResultStatus('error');
@@ -103,9 +116,9 @@ export const CameraScreen: React.FC<Props> = ({ navigation, route }) => {
 
       setIsProcessingResult(true);
       try {
-        const embedding = createEmbeddingFromDetectionSignal(face, latestLivenessFrame);
-        const result = await verifyFace({
-          embedding,
+        const imageUri = await captureModelInput();
+        const result = await verifyFaceFromImage({
+          imageUri,
           livenessPassed: true,
           deviceId: 'mobile-local',
         });
@@ -147,31 +160,30 @@ export const CameraScreen: React.FC<Props> = ({ navigation, route }) => {
   }, [resetLiveness]);
 
   const handleEnrollmentCapture = useCallback(async () => {
-    const state = useAppStore.getState();
-    const face = state.detectedFaces[0];
-    const latestLivenessFrame =
-      state.livenessFrameBuffer[state.livenessFrameBuffer.length - 1];
-
-    if (!face || !enrollmentName) return;
+    if (detectedFaces.length === 0 || !enrollmentName) return;
 
     setIsProcessingResult(true);
     try {
-      const embedding = createEmbeddingFromDetectionSignal(face, latestLivenessFrame);
-      const result = await enrollFace({
+      const imageUri = await captureModelInput();
+      const result = await enrollFaceFromImage({
         name: enrollmentName,
-        embedding,
+        imageUri,
       });
       useAppStore.getState().enrollUser(result.user);
       setResultStatus('success');
-      setResultMessage(`${result.user.name} enrolled and saved`);
+      setResultMessage(
+        result.modelUsed
+          ? `${result.user.name} enrolled with ML model`
+          : `${result.user.name} enrolled and saved`,
+      );
     } catch (error) {
       setResultStatus('error');
-      setResultMessage('Enrollment could not be saved');
+      setResultMessage('Enrollment could not run through ML model');
       if (__DEV__) console.warn('[CameraScreen] Enrollment error:', error);
     } finally {
       setIsProcessingResult(false);
     }
-  }, [enrollmentName]);
+  }, [captureModelInput, detectedFaces.length, enrollmentName]);
 
   // ─────────────────────────────────────────────────────────────────────────────
   // Render: Loading

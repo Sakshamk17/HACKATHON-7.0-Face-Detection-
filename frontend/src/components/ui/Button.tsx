@@ -1,9 +1,10 @@
 import React from 'react';
 import { TouchableOpacity, Text, StyleSheet, TouchableOpacityProps, ActivityIndicator } from 'react-native';
+import { COLORS } from '../../config/theme';
 
 interface ButtonProps extends TouchableOpacityProps {
   title: string;
-  variant?: 'primary' | 'secondary' | 'outline';
+  variant?: 'primary' | 'secondary' | 'outline' | 'danger';
   isLoading?: boolean;
 }
 
@@ -27,7 +28,7 @@ export const Button: React.FC<ButtonProps> = ({
       {...props}
     >
       {isLoading ? (
-        <ActivityIndicator color={variant === 'outline' ? '#007AFF' : '#fff'} />
+        <ActivityIndicator color={variant === 'outline' ? COLORS.primary : '#fff'} />
       ) : (
         <Text style={[styles.text, variant === 'outline' && styles.textOutline]}>
           {title}
@@ -41,31 +42,36 @@ const styles = StyleSheet.create({
   container: {
     paddingVertical: 14,
     paddingHorizontal: 24,
-    borderRadius: 8,
+    borderRadius: 4, // Sharper border for industrial feel
     alignItems: 'center',
     justifyContent: 'center',
     flexDirection: 'row',
   },
   primary: {
-    backgroundColor: '#007AFF',
+    backgroundColor: COLORS.primary,
   },
   secondary: {
-    backgroundColor: '#5856D6',
+    backgroundColor: COLORS.secondary,
+  },
+  danger: {
+    backgroundColor: COLORS.danger,
   },
   outline: {
     backgroundColor: 'transparent',
-    borderWidth: 1,
-    borderColor: '#007AFF',
+    borderWidth: 2,
+    borderColor: COLORS.primary,
   },
   disabled: {
-    opacity: 0.6,
+    opacity: 0.5,
   },
   text: {
     color: '#fff',
     fontSize: 16,
-    fontWeight: '600',
+    fontWeight: '700',
+    textTransform: 'uppercase', // Government/industrial look
+    letterSpacing: 1,
   },
   textOutline: {
-    color: '#007AFF',
+    color: COLORS.primary,
   },
 });

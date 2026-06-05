@@ -1,176 +1,106 @@
-/**
- * FaceBoundingBox.tsx
- *
- * Renders a single animated face bounding box over the camera preview.
- * Uses React Native Animated for smooth tracking without Reanimated dependency.
- *
- * Design:
- * - Corner bracket accents (not full border) — looks premium, less visual noise
- * - Animated scale + opacity on appear/disappear
- * - Color shifts based on detection confidence (green = good, white = scanning)
- * - Face ID badge for multi-face debugging
- */
-
 import React, { useEffect, useRef } from 'react';
-import { Animated, StyleSheet, View, Text } from 'react-native';
-import type { ScreenBounds } from '../../types';
+import { StyleSheet, Animated } from 'react-native';
+import { COLORS } from '../../config/theme';
 
-// ─── Constants ────────────────────────────────────────────────────────────────
-
-const CORNER_SIZE = 20;
-const CORNER_THICKNESS = 3;
-const ANIMATION_DURATION = 80; // ms — fast snap to position
-
-// ─── Types ────────────────────────────────────────────────────────────────────
-
-interface FaceBoundingBoxProps {
-  bounds: ScreenBounds;
-  /** Detection quality — affects color. true = locked, false = scanning */
+type Props = {
+  bounds: { x?: number; y?: number; left?: number; top?: number; width: number; height: number };
   isLocked?: boolean;
-  /** Optional face index for debugging */
   faceIndex?: number;
-  /** Whether to show debug info (bounds, index) */
   showDebug?: boolean;
-}
+};
 
-// ─── Component ────────────────────────────────────────────────────────────────
+export const FaceBoundingBox: React.FC<Props> = React.memo(({ bounds, isLocked }) => {
+  // Handle ML Kit coordinate mapping differences
+  const x = bounds.left ?? bounds.x ?? 0;
+  const y = bounds.top ?? bounds.y ?? 0;
+  const width = bounds.width;
+  const height = bounds.height;
 
-export const FaceBoundingBox: React.FC<FaceBoundingBoxProps> = React.memo(
-  ({ bounds, isLocked = false, faceIndex = 0, showDebug = false }) => {
-    // Animated values for smooth position/size transitions
-    const animTop = useRef(new Animated.Value(bounds.top)).current;
-    const animLeft = useRef(new Animated.Value(bounds.left)).current;
-    const animWidth = useRef(new Animated.Value(bounds.width)).current;
-    const animHeight = useRef(new Animated.Value(bounds.height)).current;
-    const animOpacity = useRef(new Animated.Value(0)).current;
+  const animLeft = useRef(new Animated.Value(x)).current;
+  const animTop = useRef(new Animated.Value(y)).current;
+  const animWidth = useRef(new Animated.Value(width)).current;
+  const animHeight = useRef(new Animated.Value(height)).current;
 
-    // Fade in on mount
-    useEffect(() => {
-      Animated.timing(animOpacity, {
-        toValue: 1,
-        duration: 150,
-        useNativeDriver: true,
-      }).start();
-    }, [animOpacity]);
+  useEffect(() => {
+    Animated.spring(animLeft, { toValue: x, useNativeDriver: false, friction: 8 }).start();
+    Animated.spring(animTop, { toValue: y, useNativeDriver: false, friction: 8 }).start();
+    Animated.spring(animWidth, { toValue: width, useNativeDriver: false, friction: 8 }).start();
+    Animated.spring(animHeight, { toValue: height, useNativeDriver: false, friction: 8 }).start();
+  }, [x, y, width, height]);
 
-    // Smooth position / size tracking
-    useEffect(() => {
-      Animated.parallel([
-        Animated.timing(animTop, {
-          toValue: bounds.top,
-          duration: ANIMATION_DURATION,
-          useNativeDriver: false,
-        }),
-        Animated.timing(animLeft, {
-          toValue: bounds.left,
-          duration: ANIMATION_DURATION,
-          useNativeDriver: false,
-        }),
-        Animated.timing(animWidth, {
-          toValue: bounds.width,
-          duration: ANIMATION_DURATION,
-          useNativeDriver: false,
-        }),
-        Animated.timing(animHeight, {
-          toValue: bounds.height,
-          duration: ANIMATION_DURATION,
-          useNativeDriver: false,
-        }),
-      ]).start();
-    }, [bounds.top, bounds.left, bounds.width, bounds.height, animTop, animLeft, animWidth, animHeight]);
+  const color = isLocked ? COLORS.success : COLORS.warning;
 
-    const cornerColor = isLocked ? '#00FF88' : 'rgba(255, 255, 255, 0.85)';
+  return (
+    <Animated.View style={[styles.container, {
+      left: animLeft,
+      top: animTop,
+      width: animWidth,
+      height: animHeight,
+    }]}>
+      {/* Top Left */}
+      <Animated.View style={[styles.corner, styles.topLeft, { borderColor: color }]} />
+      {/* Top Right */}
+      <Animated.View style={[styles.corner, styles.topRight, { borderColor: color }]} />
+      {/* Bottom Left */}
+      <Animated.View style={[styles.corner, styles.bottomLeft, { borderColor: color }]} />
+      {/* Bottom Right */}
+      <Animated.View style={[styles.corner, styles.bottomRight, { borderColor: color }]} />
+      
+      {/* Center crosshair minimal */}
+      <Animated.View style={[styles.crosshairX, { backgroundColor: color }]} />
+      <Animated.View style={[styles.crosshairY, { backgroundColor: color }]} />
+    </Animated.View>
+  );
+});
 
-    return (
-      // Outer: opacity only — safe to run on native driver (GPU compositing)
-      <Animated.View style={{ opacity: animOpacity }}>
-        {/* Inner: layout props cannot use native driver — must be JS-driven */}
-        <Animated.View
-          style={[
-            styles.container,
-            {
-              top: animTop,
-              left: animLeft,
-              width: animWidth,
-              height: animHeight,
-            },
-          ]}
-        >
-          {/* ── Corner Brackets ── */}
-          {/* Top-left */}
-          <View style={[styles.corner, styles.cornerTL, { borderColor: cornerColor }]} />
-          {/* Top-right */}
-          <View style={[styles.corner, styles.cornerTR, { borderColor: cornerColor }]} />
-          {/* Bottom-left */}
-          <View style={[styles.corner, styles.cornerBL, { borderColor: cornerColor }]} />
-          {/* Bottom-right */}
-          <View style={[styles.corner, styles.cornerBR, { borderColor: cornerColor }]} />
-
-          {/* ── Debug badge ── */}
-          {showDebug && (
-            <View style={styles.debugBadge}>
-              <Text style={styles.debugText}>
-                #{faceIndex} {Math.round(bounds.width)}×{Math.round(bounds.height)}
-              </Text>
-            </View>
-          )}
-        </Animated.View>
-      </Animated.View>
-    );
-  },
-);
-
-// ─── Styles ───────────────────────────────────────────────────────────────────
+const CORNER_SIZE = 24;
+const BORDER_WIDTH = 4;
 
 const styles = StyleSheet.create({
   container: {
     position: 'absolute',
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   corner: {
     position: 'absolute',
     width: CORNER_SIZE,
     height: CORNER_SIZE,
   },
-  cornerTL: {
+  topLeft: {
     top: 0,
     left: 0,
-    borderTopWidth: CORNER_THICKNESS,
-    borderLeftWidth: CORNER_THICKNESS,
-    borderTopLeftRadius: 4,
+    borderTopWidth: BORDER_WIDTH,
+    borderLeftWidth: BORDER_WIDTH,
   },
-  cornerTR: {
+  topRight: {
     top: 0,
     right: 0,
-    borderTopWidth: CORNER_THICKNESS,
-    borderRightWidth: CORNER_THICKNESS,
-    borderTopRightRadius: 4,
+    borderTopWidth: BORDER_WIDTH,
+    borderRightWidth: BORDER_WIDTH,
   },
-  cornerBL: {
+  bottomLeft: {
     bottom: 0,
     left: 0,
-    borderBottomWidth: CORNER_THICKNESS,
-    borderLeftWidth: CORNER_THICKNESS,
-    borderBottomLeftRadius: 4,
+    borderBottomWidth: BORDER_WIDTH,
+    borderLeftWidth: BORDER_WIDTH,
   },
-  cornerBR: {
+  bottomRight: {
     bottom: 0,
     right: 0,
-    borderBottomWidth: CORNER_THICKNESS,
-    borderRightWidth: CORNER_THICKNESS,
-    borderBottomRightRadius: 4,
+    borderBottomWidth: BORDER_WIDTH,
+    borderRightWidth: BORDER_WIDTH,
   },
-  debugBadge: {
+  crosshairX: {
     position: 'absolute',
-    top: -20,
-    left: 0,
-    backgroundColor: 'rgba(0,0,0,0.6)',
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 4,
+    width: 12,
+    height: 1,
+    opacity: 0.5,
   },
-  debugText: {
-    color: '#00FF88',
-    fontSize: 10,
-    fontFamily: 'monospace',
+  crosshairY: {
+    position: 'absolute',
+    width: 1,
+    height: 12,
+    opacity: 0.5,
   },
 });
